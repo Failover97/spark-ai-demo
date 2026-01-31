@@ -1,4 +1,5 @@
 import json
+import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -11,6 +12,7 @@ from spoonos_server.core.config import AppConfig
 
 
 DIMENSIONS = ["Why", "When", "HowMuch", "WhatIf", "Exit"]
+LOGGER = logging.getLogger("mirror_battle")
 
 
 @dataclass
@@ -88,6 +90,22 @@ def _safe_json(text: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _opp_schema_hint() -> str:
+    return (
+        "必须只输出JSON，字段包含："
+        "stance, counterpoints(>=3, 每条含point与required_evidence), "
+        "cross_questions(>=3), risk_flags(按严重程度排序)。"
+    )
+
+
+def _judge_schema_hint() -> str:
+    return (
+        "必须只输出JSON，字段包含：dimension, should_terminate, termination_type, "
+        "winner, scores{argument_strength,evidence_quality,fit_to_user}, "
+        "blood_change, new_blood{user,mirror}, reason, round_summary。"
+    )
+
+
 def _clamp_blood(value: int) -> int:
     return max(0, min(100, value))
 
@@ -123,22 +141,31 @@ def _overall_outcome(blood_user: int) -> str:
     return "crush_loss"
 
 
+def _looks_like_concede(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(
+        token in lowered
+        for token in ("你说得对", "我认了", "我认输", "我考虑一下", "先不做了", "放弃")
+    )
+
+
 def _format_report(state: BattleState) -> str:
     outcome = _overall_outcome(state.blood_user)
     lines = [
-        "【Mirror Battle 报告】",
+        "[报告]",
+        "",
+        "▼",
+        "→ 盲点分析",
+        "→ 行动建议",
+        "",
         f"总体结果：{outcome}（user={state.blood_user} / mirror={state.blood_mirror}）",
-        "各维度结果：",
     ]
     for item in state.dimension_results:
         lines.append(
             f"- {item.get('dimension')}: winner={item.get('winner')} "
             f"(user={item.get('blood_user')} / mirror={item.get('blood_mirror')})"
         )
-        reason = item.get("reason") or ""
-        if reason:
-            lines.append(f"  关键争点：{reason}")
-    lines.append("盲点识别：请检查是否存在过度自信、忽视止损、仓位过重等问题。")
+    lines.append("盲点分析：请检查是否存在过度自信、忽视止损、仓位过重等问题。")
     lines.append("行动建议：基于你提供的信息补齐证据、限定风险边界、明确退出条件。")
     return "\n".join(lines)
 
@@ -180,9 +207,11 @@ async def run_mirror_battle_turn(
             "user_message": user_message,
             "blood": {"user": state.blood_user, "mirror": state.blood_mirror},
             "history": history[-3:],
+            "format": _opp_schema_hint(),
         },
         ensure_ascii=False,
     )
+    LOGGER.info("CALL_OPP start dimension=%s round=%s", dimension, state.round_in_dimension)
     if subagent_tool:
         opp_payload = await subagent_tool.execute(
             name="opp",
@@ -191,7 +220,43 @@ async def run_mirror_battle_turn(
         )
     else:
         opp_payload = await subagents["opp"].run(request=opp_request)
-    opp_json = _safe_json(opp_payload if isinstance(opp_payload, str) else str(opp_payload))
+    LOGGER.info(
+        "CALL_OPP end len=%s preview=%s",
+        len(str(opp_payload)),
+        str(opp_payload)[:120],
+    )
+    opp_json = _safe_json(
+        opp_payload if isinstance(opp_payload, str) else str(opp_payload)
+    )
+    if not isinstance(opp_json, dict):
+        retry_request = json.dumps(
+            {
+                "dimension": dimension,
+                "user_message": user_message,
+                "blood": {"user": state.blood_user, "mirror": state.blood_mirror},
+                "history": history[-3:],
+                "format": _opp_schema_hint(),
+                "strict": "JSON_ONLY",
+            },
+            ensure_ascii=False,
+        )
+        LOGGER.info("CALL_OPP retry start")
+        if subagent_tool:
+            opp_payload = await subagent_tool.execute(
+                name="opp",
+                message=retry_request,
+                description="Mirror battle: retry opp JSON",
+            )
+        else:
+            opp_payload = await subagents["opp"].run(request=retry_request)
+        LOGGER.info(
+            "CALL_OPP retry end len=%s preview=%s",
+            len(str(opp_payload)),
+            str(opp_payload)[:120],
+        )
+        opp_json = _safe_json(
+            opp_payload if isinstance(opp_payload, str) else str(opp_payload)
+        )
     if not isinstance(opp_json, dict):
         opp_json = {
             "stance": "观点不足以成立。",
@@ -208,9 +273,11 @@ async def run_mirror_battle_turn(
             "opp_output": opp_json,
             "blood": {"user": state.blood_user, "mirror": state.blood_mirror},
             "history": history[-3:],
+            "format": _judge_schema_hint(),
         },
         ensure_ascii=False,
     )
+    LOGGER.info("CALL_JUDGE start dimension=%s round=%s", dimension, state.round_in_dimension)
     if subagent_tool:
         judge_payload = await subagent_tool.execute(
             name="judge",
@@ -219,9 +286,55 @@ async def run_mirror_battle_turn(
         )
     else:
         judge_payload = await subagents["judge"].run(request=judge_request)
+    LOGGER.info(
+        "CALL_JUDGE end len=%s preview=%s",
+        len(str(judge_payload)),
+        str(judge_payload)[:200],
+    )
     judge_json = _safe_json(
         judge_payload if isinstance(judge_payload, str) else str(judge_payload)
-    ) or {}
+    )
+    if not isinstance(judge_json, dict):
+        retry_request = json.dumps(
+            {
+                "dimension": dimension,
+                "round": state.round_in_dimension,
+                "user_message": user_message,
+                "opp_output": opp_json,
+                "blood": {"user": state.blood_user, "mirror": state.blood_mirror},
+                "history": history[-3:],
+                "format": _judge_schema_hint(),
+                "strict": "JSON_ONLY",
+            },
+            ensure_ascii=False,
+        )
+        LOGGER.info("CALL_JUDGE retry start")
+        if subagent_tool:
+            judge_payload = await subagent_tool.execute(
+                name="judge",
+                message=retry_request,
+                description="Mirror battle: retry judge JSON",
+            )
+        else:
+            judge_payload = await subagents["judge"].run(request=retry_request)
+        LOGGER.info(
+            "CALL_JUDGE retry end len=%s preview=%s",
+            len(str(judge_payload)),
+            str(judge_payload)[:200],
+        )
+        judge_json = _safe_json(
+            judge_payload if isinstance(judge_payload, str) else str(judge_payload)
+        )
+    if not isinstance(judge_json, dict):
+        judge_json = {}
+
+    if _looks_like_concede(user_message):
+        judge_json.setdefault("should_terminate", True)
+        judge_json.setdefault("termination_type", "user_concede")
+        judge_json.setdefault("winner", "mirror")
+        judge_json.setdefault("blood_change", -10)
+        judge_json.setdefault("reason", "用户表达退让/认同，镜像获胜。")
+        judge_json.setdefault("round_summary", "用户让步，本轮判定镜像占优。")
 
     blood_change = int(judge_json.get("blood_change", 0) or 0)
     new_blood = judge_json.get("new_blood")
@@ -263,13 +376,14 @@ async def run_mirror_battle_turn(
 
     opp_questions = opp_json.get("cross_questions") or []
     next_question = opp_questions[0] if opp_questions else "请补充更明确的数据或边界条件。"
+    counterpoints = opp_json.get("counterpoints", [])
+    counterpoints_text = "; ".join(counterpoints) if counterpoints else "暂无可用反证。"
     response = (
         f"【维度】{dimension}\n"
         f"【血条】user={state.blood_user} / mirror={state.blood_mirror}\n"
-        f"【镜像观点】{opp_json.get('stance')}\n"
-        f"【反证要点】{'; '.join(opp_json.get('counterpoints', []))}\n"
-        f"【裁判提示】{judge_json.get('round_summary', '')}\n"
-        f"【追问】{next_question}"
+        f"【镜像立场】{opp_json.get('stance')}\n"
+        f"【反证要点】{counterpoints_text}\n"
+        f"【下一问】{next_question}"
     )
 
     if should_terminate and state.current_dimension_index >= len(state.selected_dimensions):

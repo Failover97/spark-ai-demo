@@ -737,18 +737,22 @@ if BaseTool:
                 "from_users": {
                     "type": "array",
                     "description": "Optional list of usernames (without @).",
+                    "items": {"type": "string"},
                 },
                 "mentions": {
                     "type": "array",
                     "description": "Optional list of mentioned usernames (without @).",
+                    "items": {"type": "string"},
                 },
                 "hashtags": {
                     "type": "array",
                     "description": "Optional list of hashtags (without #).",
+                    "items": {"type": "string"},
                 },
                 "exclude_words": {
                     "type": "array",
                     "description": "Optional list of excluded keywords.",
+                    "items": {"type": "string"},
                 },
                 "only_original": {
                     "type": "boolean",

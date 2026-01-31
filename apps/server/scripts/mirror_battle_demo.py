@@ -2,7 +2,7 @@ import json
 import urllib.request
 
 
-API_URL = "http://localhost:8000/v1/agent/stream"
+API_URL = "http://localhost:8000/v1/agent"
 
 
 def _post(payload: dict) -> str:
