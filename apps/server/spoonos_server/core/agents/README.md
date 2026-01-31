@@ -31,6 +31,38 @@ How to register with the main agent
     `spoonos_server/api/routes/agent.py`).
   - Each item must follow the `SubAgentSpec` schema.
 
+Mirror Battle System
+--------------------
+This repo adds a "Mirror Battle" workflow (main orchestrator + opp + judge).
+Key pieces:
+- Orchestrator logic + state: `mirror_battle.py`
+- Opponent sub-agent: `opp_agent.py` (JSON output, contrarian stance)
+- Judge sub-agent: `judge_agent.py` (strict JSON verdict + blood change)
+- API entry: `spoonos_server/api/routes/agent.py` (gate via request.battle)
+- Request schema: `spoonos_server/core/schemas.py` (BattleConfig)
+
+How to trigger Mirror Battle
+----------------------------
+Use the `/v1/agent/stream` endpoint with `battle.enabled=true`.
+You can also preselect dimensions:
+```json
+{
+  "message": "我想 All in SOL",
+  "stream_mode": "raw",
+  "battle": { "enabled": true, "selected_dimensions": ["HowMuch", "Exit"] }
+}
+```
+
+Local demo script
+-----------------
+Run:
+```
+python apps/server/scripts/mirror_battle_demo.py
+```
+It includes two cases:
+1) "All in SOL" with HowMuch + Exit
+2) User concedes in round 2 (session_id: battle-demo-concede)
+
 Tips
 ----
 - Keep sub-agent system prompts concise; they are appended at creation time in

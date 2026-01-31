@@ -17,6 +17,12 @@ class SubAgentSpec(BaseModel):
     mcp_enabled: Optional[bool] = None
 
 
+class BattleConfig(BaseModel):
+    enabled: bool = True
+    selected_dimensions: Optional[List[str]] = None
+    max_rounds_per_dimension: int = 6
+
+
 class StreamRequest(BaseModel):
     message: Optional[str] = None
     messages: Optional[List[ChatMessage]] = None
@@ -28,5 +34,6 @@ class StreamRequest(BaseModel):
     toolkits: Optional[List[str]] = None
     mcp_enabled: Optional[bool] = None
     sub_agents: Optional[List[SubAgentSpec]] = None
+    battle: Optional[BattleConfig] = None
     stream_mode: str = Field("sse", pattern="^(sse|raw)$")
     timeout: float = 120.0

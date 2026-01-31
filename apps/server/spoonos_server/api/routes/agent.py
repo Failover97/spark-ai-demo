@@ -11,6 +11,11 @@ from spoonos_server.core.agents.react_agent import (
 )
 from spoonos_server.core.config import load_config
 from spoonos_server.core.schemas import ChatMessage, StreamRequest
+from spoonos_server.core.agents.mirror_battle import (
+    BattleState,
+    run_mirror_battle_turn,
+    normalize_dimensions,
+)
 
 
 router = APIRouter()
@@ -18,6 +23,7 @@ config = load_config()
 
 # In-memory store to allow future session/memory extensions.
 SESSION_STORE: Dict[str, List[ChatMessage]] = {}
+MIRROR_BATTLE_STORE: Dict[str, BattleState] = {}
 
 
 def _merge_messages(
@@ -58,19 +64,46 @@ async def stream_agent(request: StreamRequest) -> StreamingResponse:
         else request.messages[-1].content  # type: ignore[index]
     )
 
-    agent = create_react_agent(
-        config=config,
-        system_prompt=request.system_prompt,
-        profile_prompt=request.profile_prompt,
-        session_id=request.session_id,
-        provider=request.provider,
-        model=request.model,
-        toolkits=request.toolkits,
-        mcp_enabled=request.mcp_enabled,
-        sub_agents=request.sub_agents,
-    )
-
     async def event_stream() -> AsyncIterator[str]:
+        if request.battle and request.battle.enabled:
+            state = MIRROR_BATTLE_STORE.get(session_id) or BattleState()
+            if request.battle.selected_dimensions and state.awaiting_dimension_choice:
+                state.selected_dimensions = normalize_dimensions(
+                    request.battle.selected_dimensions
+                )
+                if state.selected_dimensions:
+                    state.awaiting_dimension_choice = False
+            text, new_state, done = await run_mirror_battle_turn(
+                config=config,
+                state=state,
+                user_message=user_message,
+            )
+            MIRROR_BATTLE_STORE[session_id] = new_state
+            event = {
+                "id": str(uuid.uuid4()),
+                "role": "assistant",
+                "parts": [{"type": "text", "text": text, "state": "done"}],
+            }
+            payload = json.dumps(event, ensure_ascii=False, default=_json_default)
+            if request.stream_mode == "sse":
+                yield f"data: {payload}\n\n"
+            else:
+                yield payload
+            if done:
+                MIRROR_BATTLE_STORE.pop(session_id, None)
+            return
+
+        agent = create_react_agent(
+            config=config,
+            system_prompt=request.system_prompt,
+            profile_prompt=request.profile_prompt,
+            session_id=session_id,
+            provider=request.provider,
+            model=request.model,
+            toolkits=request.toolkits,
+            mcp_enabled=request.mcp_enabled,
+            sub_agents=request.sub_agents,
+        )
         async for event in stream_agent_events(agent, user_message, request.timeout):
             payload = json.dumps(event, ensure_ascii=False, default=_json_default)
             if request.stream_mode == "sse":
@@ -97,19 +130,42 @@ async def run_agent(request: StreamRequest) -> JSONResponse:
         else request.messages[-1].content  # type: ignore[index]
     )
 
+    events: List[Dict[str, object]] = []
+    if request.battle and request.battle.enabled:
+        state = MIRROR_BATTLE_STORE.get(session_id) or BattleState()
+        if request.battle.selected_dimensions and state.awaiting_dimension_choice:
+            state.selected_dimensions = normalize_dimensions(
+                request.battle.selected_dimensions
+            )
+            if state.selected_dimensions:
+                state.awaiting_dimension_choice = False
+        text, new_state, done = await run_mirror_battle_turn(
+            config=config,
+            state=state,
+            user_message=user_message,
+        )
+        MIRROR_BATTLE_STORE[session_id] = new_state
+        event = {
+            "id": str(uuid.uuid4()),
+            "role": "assistant",
+            "parts": [{"type": "text", "text": text, "state": "done"}],
+        }
+        events.append(event)
+        if done:
+            MIRROR_BATTLE_STORE.pop(session_id, None)
+        return JSONResponse({"events": events})
+
     agent = create_react_agent(
         config=config,
         system_prompt=request.system_prompt,
         profile_prompt=request.profile_prompt,
-        session_id=request.session_id,
+        session_id=session_id,
         provider=request.provider,
         model=request.model,
         toolkits=request.toolkits,
         mcp_enabled=request.mcp_enabled,
         sub_agents=request.sub_agents,
     )
-
-    events: List[Dict[str, object]] = []
     async for event in stream_agent_events(agent, user_message, request.timeout):
         payload = json.loads(
             json.dumps(event, ensure_ascii=False, default=_json_default)

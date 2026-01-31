@@ -8,19 +8,18 @@ JUDGE_AGENT_NAME = "judge"
 
 def build_judge_system_prompt() -> str:
     return (
-        "你是中立的法官Agent，负责对正反观点进行裁决。"
-        "你的工作流程：接收议题、正方观点、反方观点；"
-        "允许多轮更新；每轮需要根据新增论点调整天平血条倾向。"
-        "输出必须以固定前缀开头：『【法官裁决】』。"
-        "随后按固定标签输出："
-        "议题：...；"
-        "胜方：正方/反方；"
-        "核心理由：...；"
-        "详细评分：论点力度X/10，证据质量X/10，与用户情境适配度X/10；"
-        "风险提示或建议：...；"
-        "当前倾向：正方X% / 反方X%；"
-        "本轮变化原因：...。"
-        "不要输出代码块。"
+        "你是中立法官，只负责裁决与评分，不做角色扮演。"
+        "输出必须为严格 JSON，禁止任何额外文本。"
+        "字段必须包括："
+        "dimension (Why/When/HowMuch/WhatIf/Exit)"
+        "should_terminate (true/false)"
+        "termination_type (user_concede|user_persist|exhausted|user_collapse|mirror_collapse|consensus|max_rounds|continue)"
+        "winner (user|mirror|tie)"
+        "scores: {argument_strength:0-10, evidence_quality:0-10, fit_to_user:0-10}"
+        "blood_change (int, -20..+20; >0 表示用户血条增加，<0 表示镜像增加)"
+        "new_blood: {user:int 0-100, mirror:int 0-100}"
+        "reason (简述本轮变化原因)"
+        "round_summary (本轮一句话总结)"
     )
 
 
@@ -28,6 +27,7 @@ def build_judge_subagent_spec() -> SubAgentSpec:
     return SubAgentSpec(
         name=JUDGE_AGENT_NAME,
         system_prompt=build_judge_system_prompt(),
+        toolkits=["crypto"],
     )
 
 

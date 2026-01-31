@@ -18,6 +18,7 @@ from spoonos_server.core.tools.toolkits import (
 from spoonos_server.core.tools.tool_call_wrapper import wrap_tools_for_calls
 from spoonos_server.core.agents.sub_agents import SubAgentTool, create_subagents
 from spoonos_server.core.agents.judge_agent import ensure_judge_subagent_specs
+from spoonos_server.core.agents.opp_agent import ensure_opp_subagent_specs
 
 
 DEFAULT_SYSTEM_PROMPT = system_prompt
@@ -54,6 +55,7 @@ def create_react_agent(
         tools.extend(load_mcp_tools(config.mcp))
 
     sub_agents = ensure_judge_subagent_specs(sub_agents)
+    sub_agents = ensure_opp_subagent_specs(sub_agents)
     subagent_map = create_subagents(sub_agents, config)
     subagent_tool = None
     if subagent_map and SubAgentTool:
